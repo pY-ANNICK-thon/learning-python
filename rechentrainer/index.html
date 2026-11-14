@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rechentrainer</title>
+<style>
+  :root {
+    --bg: #f4f6fb; --card: #ffffff; --text: #1d2433; --muted: #6b7489;
+    --accent: #3b6cf6; --ok: #1f9d55; --err: #d64545; --border: #dde2ee;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151c; --card: #1c212b; --text: #e7ebf3; --muted: #8b94a7;
+      --accent: #6b93ff; --ok: #3ccf7f; --err: #ff6b6b; --border: #2c3341;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex; justify-content: center; padding: 24px 16px;
+  }
+  main { width: 100%; max-width: 560px; }
+  h1 { margin: 0 0 16px; font-size: 1.6rem; }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+    padding: 20px; margin-bottom: 16px;
+  }
+  .modes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  button {
+    font: inherit; cursor: pointer; border-radius: 10px; padding: 10px 12px;
+    border: 1px solid var(--border); background: var(--card); color: var(--text);
+  }
+  button:hover { border-color: var(--accent); }
+  button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+  label { color: var(--muted); font-size: .9rem; }
+  select { font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--border);
+           background: var(--card); color: var(--text); }
+  .task { font-size: 2.6rem; font-weight: 700; text-align: center; margin: 8px 0 16px;
+          font-variant-numeric: tabular-nums; }
+  form { display: flex; gap: 8px; }
+  input[type=number] {
+    flex: 1; min-width: 0; font: inherit; font-size: 1.5rem; padding: 10px 12px;
+    border-radius: 10px; border: 2px solid var(--border); background: var(--bg); color: var(--text);
+  }
+  input[type=number]:focus { outline: none; border-color: var(--accent); }
+  .primary { background: var(--accent); border-color: var(--accent); color: #fff; padding: 10px 18px; }
+  .feedback { min-height: 1.5em; text-align: center; margin-top: 12px; font-weight: 600; }
+  .feedback.ok { color: var(--ok); } .feedback.err { color: var(--err); }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; text-align: center; }
+  .stat b { display: block; font-size: 1.4rem; font-variant-numeric: tabular-nums; }
+  .stat span { color: var(--muted); font-size: .8rem; }
+  .history { max-height: 180px; overflow-y: auto; font-variant-numeric: tabular-nums; margin: 0;
+             padding: 0; list-style: none; }
+  .history li { padding: 4px 0; border-bottom: 1px solid var(--border); display: flex;
+                justify-content: space-between; }
+  .history .ok { color: var(--ok); } .history .err { color: var(--err); }
+  .muted { color: var(--muted); font-size: .85rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Rechentrainer</h1>
+
+  <section class="card">
+    <div class="modes" id="modes">
+      <button data-mode="klein">Kleines Einmaleins</button>
+      <button data-mode="gross">Großes Einmaleins</button>
+      <button data-mode="addsub">Addieren &amp; Subtrahieren</button>
+      <button data-mode="muldiv">Multiplizieren &amp; Dividieren</button>
+    </div>
+    <div class="row" id="levelRow">
+      <label for="level">Schwierigkeit:</label>
+      <select id="level">
+        <option value="1">Leicht</option>
+        <option value="2" selected>Mittel</option>
+        <option value="3">Schwer</option>
+      </select>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="task" id="task">–</div>
+    <form id="form" autocomplete="off">
+      <input type="number" id="answer" inputmode="numeric" placeholder="Ergebnis" required>
+      <button class="primary" type="submit">Prüfen</button>
+    </form>
+    <div class="feedback" id="feedback"></div>
+    <div class="row" style="justify-content:center">
+      <button type="button" id="skip">Überspringen</button>
+      <button type="button" id="reset">Statistik zurücksetzen</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="stats">
+      <div class="stat"><b id="sRight">0</b><span>Richtig</span></div>
+      <div class="stat"><b id="sWrong">0</b><span>Falsch</span></div>
+      <div class="stat"><b id="sStreak">0</b><span>Serie</span></div>
+      <div class="stat"><b id="sRate">–</b><span>Quote</span></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <p class="muted" style="margin-top:0">Verlauf</p>
+    <ul class="history" id="history"></ul>
+  </section>
+</main>
+
+<script>
+  // Zufallszahl zwischen min und max (beide inklusive)
+  const rnd = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+
+  // Zahlenbereiche je Schwierigkeit für Plus/Minus und Mal/Geteilt
+  const RANGES = {
+    addsub: { 1: 20, 2: 100, 3: 1000 },
+    muldiv: { 1: 10, 2: 20, 3: 50 },
+  };
+
+  // Jeder Modus liefert { text, result }
+  const generators = {
+    klein() {
+      const a = rnd(1, 10), b = rnd(1, 10);
+      return { text: `${a} · ${b}`, result: a * b };
+    },
+    gross() {
+      // mindestens ein Faktor zwischen 11 und 20
+      const a = rnd(11, 20), b = rnd(1, 20);
+      return Math.random() < 0.5
+        ? { text: `${a} · ${b}`, result: a * b }
+        : { text: `${b} · ${a}`, result: a * b };
+    },
+    addsub(level) {
+      const max = RANGES.addsub[level];
+      let a = rnd(0, max), b = rnd(0, max);
+      if (Math.random() < 0.5) return { text: `${a} + ${b}`, result: a + b };
+      if (b > a) [a, b] = [b, a];           // keine negativen Ergebnisse
+      return { text: `${a} − ${b}`, result: a - b };
+    },
+    muldiv(level) {
+      const max = RANGES.muldiv[level];
+      const a = rnd(2, max), b = rnd(2, max);
+      if (Math.random() < 0.5) return { text: `${a} · ${b}`, result: a * b };
+      // Division immer ohne Rest: (a·b) : b = a
+      return { text: `${a * b} : ${b}`, result: a };
+    },
+  };
+
+  const $ = id => document.getElementById(id);
+  const state = { mode: "klein", current: null, right: 0, wrong: 0, streak: 0 };
+
+  function newTask() {
+    const level = Number($("level").value);
+    state.current = generators[state.mode](level);
+    $("task").textContent = state.current.text + " = ?";
+    $("answer").value = "";
+    $("answer").focus();
+  }
+
+  function setMode(mode) {
+    state.mode = mode;
+    document.querySelectorAll("#modes button").forEach(b =>
+      b.classList.toggle("active", b.dataset.mode === mode));
+    // Einmaleins-Modi haben keine Schwierigkeitsstufe
+    $("levelRow").style.display = (mode === "addsub" || mode === "muldiv") ? "flex" : "none";
+    $("feedback").textContent = "";
+    newTask();
+  }
+
+  function updateStats() {
+    $("sRight").textContent = state.right;
+    $("sWrong").textContent = state.wrong;
+    $("sStreak").textContent = state.streak;
+    const total = state.right + state.wrong;
+    $("sRate").textContent = total ? Math.round(state.right / total * 100) + " %" : "–";
+  }
+
+  function addHistory(text, given, correct, ok) {
+    const li = document.createElement("li");
+    li.innerHTML = `<span>${text} = ${correct}</span>` +
+      `<span class="${ok ? "ok" : "err"}">${ok ? "✓" : "✗ " + given}</span>`;
+    $("history").prepend(li);
+  }
+
+  $("form").addEventListener("submit", e => {
+    e.preventDefault();
+    const raw = $("answer").value.trim();
+    if (raw === "") return;
+    const given = Number(raw);
+    const { text, result } = state.current;
+    const ok = given === result;
+    const fb = $("feedback");
+
+    if (ok) {
+      state.right++; state.streak++;
+      fb.textContent = state.streak >= 5 ? `Richtig! ${state.streak} in Folge 🔥` : "Richtig!";
+      fb.className = "feedback ok";
+    } else {
+      state.wrong++; state.streak = 0;
+      fb.textContent = `Falsch – ${text} = ${result}`;
+      fb.className = "feedback err";
+    }
+    addHistory(text, given, result, ok);
+    updateStats();
+    newTask();
+  });
+
+  $("skip").addEventListener("click", () => {
+    const { text, result } = state.current;
+    $("feedback").textContent = `Übersprungen – ${text} = ${result}`;
+    $("feedback").className = "feedback";
+    state.streak = 0;
+    updateStats();
+    newTask();
+  });
+
+  $("reset").addEventListener("click", () => {
+    Object.assign(state, { right: 0, wrong: 0, streak: 0 });
+    $("history").innerHTML = "";
+    $("feedback").textContent = "";
+    updateStats();
+    newTask();
+  });
+
+  $("level").addEventListener("change", newTask);
+  document.querySelectorAll("#modes button").forEach(b =>
+    b.addEventListener("click", () => setMode(b.dataset.mode)));
+
+  setMode("klein");
+</script>
+</body>
+</html>
