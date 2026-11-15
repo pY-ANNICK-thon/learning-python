@@ -49,7 +49,7 @@
   .primary { background: var(--accent); border-color: var(--accent); color: #fff; padding: 10px 18px; }
   .feedback { min-height: 1.5em; text-align: center; margin-top: 12px; font-weight: 600; }
   .feedback.ok { color: var(--ok); } .feedback.err { color: var(--err); }
-  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; text-align: center; }
+  .stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; text-align: center; }
   .stat b { display: block; font-size: 1.4rem; font-variant-numeric: tabular-nums; }
   .stat span { color: var(--muted); font-size: .8rem; }
   .history { max-height: 180px; overflow-y: auto; font-variant-numeric: tabular-nums; margin: 0;
@@ -57,6 +57,7 @@
   .history li { padding: 4px 0; border-bottom: 1px solid var(--border); display: flex;
                 justify-content: space-between; }
   .history .ok { color: var(--ok); } .history .err { color: var(--err); }
+  .badge { min-height: 1.3em; text-align: center; color: var(--accent); font-weight: 600; font-size: .9rem; }
   .muted { color: var(--muted); font-size: .85rem; }
 </style>
 </head>
@@ -82,6 +83,7 @@
   </section>
 
   <section class="card">
+    <div class="badge" id="badge"></div>
     <div class="task" id="task">–</div>
     <form id="form" autocomplete="off">
       <input type="number" id="answer" inputmode="numeric" placeholder="Ergebnis" required>
@@ -100,6 +102,7 @@
       <div class="stat"><b id="sWrong">0</b><span>Falsch</span></div>
       <div class="stat"><b id="sStreak">0</b><span>Serie</span></div>
       <div class="stat"><b id="sRate">–</b><span>Quote</span></div>
+      <div class="stat"><b id="sReview">0</b><span>Zu wiederholen</span></div>
     </div>
   </section>
 
@@ -119,42 +122,111 @@
     muldiv: { 1: 10, 2: 20, 3: 50 },
   };
 
-  // Jeder Modus liefert { text, result }
-  const generators = {
-    klein() {
-      const a = rnd(1, 10), b = rnd(1, 10);
-      return { text: `${a} · ${b}`, result: a * b };
-    },
-    gross() {
-      // mindestens ein Faktor zwischen 11 und 20
-      const a = rnd(11, 20), b = rnd(1, 20);
-      return Math.random() < 0.5
-        ? { text: `${a} · ${b}`, result: a * b }
-        : { text: `${b} · ${a}`, result: a * b };
-    },
-    addsub(level) {
+  // Jeder Modus besteht aus einer oder mehreren Rechenarten ("ops").
+  // Eine op hat: name, size (Anzahl aller möglichen Aufgaben) und
+  // make() -> zufällige Aufgabe { text, result }.
+  const modes = {
+    klein: () => [{
+      name: "mal", size: 10 * 10,
+      make() { const a = rnd(1, 10), b = rnd(1, 10); return { text: `${a} · ${b}`, result: a * b }; },
+    }],
+    gross: () => [{
+      // alle Paare 1–20 · 1–20, bei denen mindestens ein Faktor ≥ 11 ist
+      name: "mal", size: 20 * 20 - 10 * 10,
+      make() {
+        let a, b;
+        do { a = rnd(1, 20); b = rnd(1, 20); } while (a <= 10 && b <= 10);
+        return { text: `${a} · ${b}`, result: a * b };
+      },
+    }],
+    addsub: level => {
       const max = RANGES.addsub[level];
-      let a = rnd(0, max), b = rnd(0, max);
-      if (Math.random() < 0.5) return { text: `${a} + ${b}`, result: a + b };
-      if (b > a) [a, b] = [b, a];           // keine negativen Ergebnisse
-      return { text: `${a} − ${b}`, result: a - b };
+      return [
+        { name: "plus", size: (max + 1) ** 2,
+          make() { const a = rnd(0, max), b = rnd(0, max); return { text: `${a} + ${b}`, result: a + b }; } },
+        { name: "minus", size: (max + 1) * (max + 2) / 2,   // nur a ≥ b → kein negatives Ergebnis
+          make() {
+            let a = rnd(0, max), b = rnd(0, max);
+            if (b > a) [a, b] = [b, a];
+            return { text: `${a} − ${b}`, result: a - b };
+          } },
+      ];
     },
-    muldiv(level) {
+    muldiv: level => {
       const max = RANGES.muldiv[level];
-      const a = rnd(2, max), b = rnd(2, max);
-      if (Math.random() < 0.5) return { text: `${a} · ${b}`, result: a * b };
-      // Division immer ohne Rest: (a·b) : b = a
-      return { text: `${a * b} : ${b}`, result: a };
+      return [
+        { name: "mal", size: (max - 1) ** 2,
+          make() { const a = rnd(2, max), b = rnd(2, max); return { text: `${a} · ${b}`, result: a * b }; } },
+        { name: "geteilt", size: (max - 1) ** 2,             // (a·b) : b = a → immer ohne Rest
+          make() { const a = rnd(2, max), b = rnd(2, max); return { text: `${a * b} : ${b}`, result: a }; } },
+      ];
     },
   };
 
+  // Pro Modus/Stufe/Rechenart merken, welche Aufgaben schon dran waren.
+  // Erst wenn ALLE einmal dran waren, wird das Gedächtnis geleert ("Runde").
+  const seen = new Map();
+
+  function drawTask(mode, level) {
+    const ops = modes[mode](level);
+    const op = ops[rnd(0, ops.length - 1)];          // Rechenart 50/50 wählen
+    const key = `${mode}|${level}|${op.name}`;
+    if (!seen.has(key)) seen.set(key, new Set());
+    const used = seen.get(key);
+    if (used.size >= op.size) used.clear();          // Runde fertig → neu mischen
+
+    let task;
+    do { task = op.make(); }
+    // keine Wiederholung in der Runde und nicht dieselbe Aufgabe direkt nochmal
+    // (außer es ist die allerletzte freie Aufgabe der Runde → sonst Endlosschleife)
+    while (used.has(task.text) ||
+           (task.text === state.current?.text && used.size < op.size - 1));
+    used.add(task.text);
+    return task;
+  }
+
   const $ = id => document.getElementById(id);
-  const state = { mode: "klein", current: null, right: 0, wrong: 0, streak: 0 };
+  const state = { mode: "klein", current: null, right: 0, wrong: 0, streak: 0, count: 0 };
+
+  // ---- Wiederholen wie bei Anki ----
+  // Falsche/übersprungene Aufgaben kommen in eine Warteschlange und tauchen
+  // nach ein paar Aufgaben wieder auf. Erst wenn sie 2x richtig gelöst wurden
+  // (kurzer + längerer Abstand), gelten sie als gelernt.
+  const STEPS = [3, 8];   // Abstand in Aufgaben: erst nach 3, dann nach 8
+  let reviews = [];       // { text, result, mode, level, step, due }
+
+  const levelOf = () => Number($("level").value);
+
+  function scheduleReview(task, mode, level) {
+    let r = reviews.find(r => r.text === task.text && r.mode === mode && r.level === level);
+    if (!r) { r = { ...task, mode, level }; reviews.push(r); }
+    r.step = 0;
+    r.due = state.count + STEPS[0];
+  }
+
+  function reviewAnsweredCorrectly(r) {
+    r.step++;
+    if (r.step >= STEPS.length) reviews = reviews.filter(x => x !== r);  // gelernt
+    else r.due = state.count + STEPS[r.step];
+  }
+
+  function nextDueReview() {
+    // fällige Wiederholung im aktuellen Modus/Stufe, die am längsten wartet
+    return reviews
+      .filter(r => r.mode === state.mode && r.level === levelOf() && r.due <= state.count
+                   && r.text !== state.current?.text)
+      .sort((a, b) => a.due - b.due)[0];
+  }
 
   function newTask() {
-    const level = Number($("level").value);
-    state.current = generators[state.mode](level);
+    state.count++;
+    const r = nextDueReview();
+    state.current = r ? { text: r.text, result: r.result, review: r }
+                      : drawTask(state.mode, levelOf());
     $("task").textContent = state.current.text + " = ?";
+    $("badge").textContent = r ? "🔁 Wiederholung" : "";
+    const open = reviews.filter(x => x.mode === state.mode && x.level === levelOf()).length;
+    $("sReview").textContent = open;
     $("answer").value = "";
     $("answer").focus();
   }
@@ -174,7 +246,7 @@
     $("sWrong").textContent = state.wrong;
     $("sStreak").textContent = state.streak;
     const total = state.right + state.wrong;
-    $("sRate").textContent = total ? Math.round(state.right / total * 100) + " %" : "–";
+    $("sRate").textContent = total ? Math.round(state.right / total * 100) + "\u00a0%" : "–";
   }
 
   function addHistory(text, given, correct, ok) {
@@ -189,8 +261,10 @@
     const raw = $("answer").value.trim();
     if (raw === "") return;
     const given = Number(raw);
-    const { text, result } = state.current;
+    const { text, result, review } = state.current;
     const ok = given === result;
+    if (ok && review) reviewAnsweredCorrectly(review);
+    if (!ok) scheduleReview({ text, result }, state.mode, levelOf());
     const fb = $("feedback");
 
     if (ok) {
@@ -209,6 +283,7 @@
 
   $("skip").addEventListener("click", () => {
     const { text, result } = state.current;
+    scheduleReview({ text, result }, state.mode, levelOf());
     $("feedback").textContent = `Übersprungen – ${text} = ${result}`;
     $("feedback").className = "feedback";
     state.streak = 0;
@@ -218,6 +293,7 @@
 
   $("reset").addEventListener("click", () => {
     Object.assign(state, { right: 0, wrong: 0, streak: 0 });
+    reviews = [];
     $("history").innerHTML = "";
     $("feedback").textContent = "";
     updateStats();
